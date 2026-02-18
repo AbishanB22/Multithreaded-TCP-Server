@@ -1,17 +1,20 @@
 #pragma once
-#include <optional>
-#include <shared_mutex>
-#include <string>
-#include <unordered_map>
 
-class KVStore {
+#include <atomic>
+#include <chrono>
+#include <cstdint>
+#include <string>
+
+class Stats {
  public:
-  void set(const std::string& key, const std::string& value);
-  std::optional<std::string> get(const std::string& key) const;
-  bool del(const std::string& key);
-  size_t size() const;
+  void on_start();
+  void inc_active();
+  void dec_active();
+  void inc_requests();
+  std::string render(int threads, size_t keys) const;
 
  private:
-  mutable std::shared_mutex mu_;
-  std::unordered_map<std::string, std::string> map_;
+  std::chrono::steady_clock::time_point start_;
+  std::atomic<int> active_{0};
+  std::atomic<uint64_t> total_requests_{0};
 };

@@ -16,12 +16,10 @@ std::string Stats::render(int threads, size_t keys) const {
       std::chrono::duration_cast<std::chrono::seconds>(now - start_).count();
 
   std::ostringstream out;
-
   out << "UPTIME " << up << "s\n";
   out << "ACTIVE_CONNECTIONS " << active_.load() << "\n";
   out << "TOTAL_REQUESTS " << total_requests_.load() << "\n";
   out << "KEYS " << keys << "\n";
   out << "THREADS " << threads << "\n";
-
   return out.str();
 }

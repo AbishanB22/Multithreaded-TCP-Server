@@ -1,19 +1,24 @@
 #pragma once
-#include <atomic>
-#include <chrono>
-#include <cstdint>
+
+#include <optional>
 #include <string>
 
-class Stats {
+class LineReader {
  public:
-  void on_start();
-  void inc_active();
-  void dec_active();
-  void inc_requests();
-  std::string render(int threads, size_t keys) const;
+  explicit LineReader(size_t max_line = 8192);
+
+  // Returns a line without '\n' (and strips optional '\r').
+  // Returns nullopt on disconnect/error.
+  // If line too long, returns "**LINE_TOO_LONG**".
+  std::optional<std::string> read_line(int fd);
 
  private:
-  std::chrono::steady_clock::time_point start_;
-  std::atomic<int> active_{0};
-  std::atomic<uint64_t> total_requests_{0};
+  size_t max_line_;
+  std::string buffer_;
 };
+
+bool send_all(int fd, const char* data, size_t len);
+bool send_str(int fd, const std::string& s);
+
+// Implemented in server.cpp (needs KV/Stats)
+std::string handle_command(const std::string& line);
