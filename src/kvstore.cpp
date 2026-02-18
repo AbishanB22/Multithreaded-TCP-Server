@@ -1,5 +1,8 @@
 #include "kvstore.hpp"
 
+#include <mutex>
+#include <shared_mutex>
+
 void KVStore::set(const std::string& key, const std::string& value) {
   std::unique_lock<std::shared_mutex> lk(mu_);
   map_[key] = value;

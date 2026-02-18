@@ -1,61 +1,34 @@
-#include <sys/socket.h>
-#include <unistd.h>
+#include "thread_pool.hpp"
 
-#include <cctype>
-#include <cerrno>
-#include <cstring>
-#include <sstream>
-#include <string>
+ThreadPool::ThreadPool(int threads, size_t queue_cap)
+    : threads_(threads), q_(queue_cap) {}
 
-#include "protocol.hpp"
+ThreadPool::~ThreadPool() { stop(); }
 
-// NOTE: handle_command() needs access to KV store + stats, so we’ll wire it in
-// server.cpp. To keep protocol.cpp simple, we only keep networking primitives +
-// LineReader here. We'll still declare handle_command in protocol.hpp but
-// define it in server.cpp.
+void ThreadPool::start() {
+  running_.store(true);
 
-LineReader::LineReader(size_t max_line) : max_line_(max_line) {}
-
-std::optional<std::string> LineReader::read_line(int fd) {
-  while (true) {
-    auto pos = buffer_.find('\n');
-    if (pos != std::string::npos) {
-      std::string line = buffer_.substr(0, pos);
-      buffer_.erase(0, pos + 1);
-      if (!line.empty() && line.back() == '\r') line.pop_back();
-      if (line.size() > max_line_) return std::string("**LINE_TOO_LONG**");
-      return line;
-    }
-
-    char tmp[4096];
-    ssize_t n = ::recv(fd, tmp, sizeof(tmp), 0);
-    if (n < 0) {
-      if (errno == EINTR) continue;
-      return std::nullopt;
-    }
-    if (n == 0) return std::nullopt;
-    buffer_.append(tmp, tmp + n);
-
-    if (buffer_.size() > max_line_ + 4096) {
-      return std::string("**LINE_TOO_LONG**");
-    }
+  for (int i = 0; i < threads_; i++) {
+    workers_.emplace_back([this]() {
+      while (running_.load()) {
+        auto job = q_.pop();
+        if (!job.has_value()) break;
+        (*job)();
+      }
+    });
   }
 }
 
-bool send_all(int fd, const char* data, size_t len) {
-  size_t sent = 0;
-  while (sent < len) {
-    ssize_t n = ::send(fd, data + sent, len - sent, 0);
-    if (n < 0) {
-      if (errno == EINTR) continue;
-      return false;
-    }
-    if (n == 0) return false;
-    sent += static_cast<size_t>(n);
+void ThreadPool::stop() {
+  if (!running_.exchange(false)) return;
+
+  q_.close();
+
+  for (auto& t : workers_) {
+    if (t.joinable()) t.join();
   }
-  return true;
+
+  workers_.clear();
 }
 
-bool send_str(int fd, const std::string& s) {
-  return send_all(fd, s.data(), s.size());
-}
+bool ThreadPool::submit(Job job) { return q_.push(std::move(job)); }
