@@ -19,16 +19,23 @@
 #include "stats.hpp"
 #include "thread_pool.hpp"
 
-// ---- Shared service state (simple + works) ----
+// ---- Shared service state ----
 static KVStore g_kv;
 static Stats g_stats;
+
+// Controls server lifetime
 static std::atomic<bool> g_running{false};
+
+// Used by stop() to break accept()
+static std::atomic<int> g_listen_fd{-1};
+
+// Thread count used in STATS output
 static int g_threads = 0;
 
-// Strict connection cap counter
+// Strict connection cap
 static std::atomic<int> g_active_strict{0};
 
-// ---- Command handler (needs KV + Stats) ----
+// ---- Command handler ----
 std::string handle_command(const std::string& line) {
   std::istringstream iss(line);
   std::string cmd;
@@ -51,7 +58,7 @@ std::string handle_command(const std::string& line) {
     std::string key;
     if (!(iss >> key)) return "ERR usage: SET key value\n";
     std::string value;
-    std::getline(iss, value);  // keep spaces in value
+    std::getline(iss, value);
     if (!value.empty() && value.front() == ' ') value.erase(0, 1);
     g_kv.set(key, value);
     return "OK\n";
@@ -85,6 +92,7 @@ static void serve_client(int fd) {
     if (!line_opt.has_value()) return;
 
     std::string line = *line_opt;
+
     if (line == "**LINE_TOO_LONG**") {
       send_str(fd, "ERR line too long\n");
       return;
@@ -100,7 +108,7 @@ static void serve_client(int fd) {
   }
 }
 
-// ---- Server implementation ----
+// ---- Server ----
 Server::Server(uint16_t port, int threads, int max_conns, size_t queue_cap)
     : port_(port),
       threads_(threads),
@@ -118,10 +126,13 @@ bool Server::start() {
     return false;
   }
 
+  g_listen_fd.store(listen_fd);
+
   int yes = 1;
   if (setsockopt(listen_fd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) {
     perror("setsockopt");
     ::close(listen_fd);
+    g_listen_fd.store(-1);
     return false;
   }
 
@@ -133,12 +144,14 @@ bool Server::start() {
   if (bind(listen_fd, (sockaddr*)&addr, sizeof(addr)) < 0) {
     perror("bind");
     ::close(listen_fd);
+    g_listen_fd.store(-1);
     return false;
   }
 
   if (listen(listen_fd, 256) < 0) {
     perror("listen");
     ::close(listen_fd);
+    g_listen_fd.store(-1);
     return false;
   }
 
@@ -147,6 +160,7 @@ bool Server::start() {
 
   std::cerr << "Listening on port " << port_ << " with " << threads_
             << " threads\n";
+  std::cerr << "Press Ctrl+C to stop gracefully.\n";
 
   while (g_running.load()) {
     sockaddr_in client_addr{};
@@ -154,12 +168,16 @@ bool Server::start() {
     int client_fd = ::accept(listen_fd, (sockaddr*)&client_addr, &client_len);
 
     if (client_fd < 0) {
+      // If stop() closed the socket, accept will fail; exit loop cleanly
+      if (!g_running.load()) break;
       if (errno == EINTR) continue;
+      // EBADF / EINVAL happens if listen_fd got closed; treat as shutdown
+      if (errno == EBADF || errno == EINVAL) break;
       perror("accept");
       continue;
     }
 
-    // Track active connections (stats + strict cap)
+    // Active tracking + strict cap
     g_stats.inc_active();
 
     int now = g_active_strict.fetch_add(1) + 1;
@@ -187,9 +205,28 @@ bool Server::start() {
     }
   }
 
+  // Stop accepting new work and wait for worker threads to finish
   pool.stop();
-  ::close(listen_fd);
+
+  // Close listen socket if still open
+  int fd = g_listen_fd.exchange(-1);
+  if (fd != -1) {
+    ::shutdown(fd, SHUT_RDWR);
+    ::close(fd);
+  }
+
+  std::cerr << "Server stopped.\n";
   return true;
 }
 
-void Server::stop() { g_running.store(false); }
+void Server::stop() {
+  // Flip running flag first so loops stop
+  g_running.store(false);
+
+  // Closing listen fd breaks accept() and exits accept loop
+  int fd = g_listen_fd.exchange(-1);
+  if (fd != -1) {
+    ::shutdown(fd, SHUT_RDWR);
+    ::close(fd);
+  }
+}

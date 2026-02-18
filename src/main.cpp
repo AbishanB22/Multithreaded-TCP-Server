@@ -1,8 +1,12 @@
+#include <csignal>
 #include <cstdlib>
 #include <iostream>
 #include <string>
 
 #include "server.hpp"
+
+// Global pointer so signal handler can trigger shutdown
+static Server* g_server_ptr = nullptr;
 
 static uint16_t parse_u16(const char* s, uint16_t def) {
   try {
@@ -24,13 +28,21 @@ static int parse_i32(const char* s, int def, int lo, int hi) {
   }
 }
 
+// Signal handler: keep it simple + safe.
+// Calls stop() which only flips atomics + closes listen socket.
+static void on_sigint(int) {
+  if (g_server_ptr) {
+    g_server_ptr->stop();
+  }
+}
+
 int main(int argc, char** argv) {
   uint16_t port = 8080;
   int threads = 8;
   int max_conns = 2000;
   size_t queue_cap = 4096;
 
-  // Support: ./server 8080 (simple)
+  // Support: ./server 8080
   if (argc >= 2 && std::string(argv[1]).rfind("--", 0) != 0) {
     port = parse_u16(argv[1], port);
   }
@@ -64,5 +76,10 @@ int main(int argc, char** argv) {
   }
 
   Server s(port, threads, max_conns, queue_cap);
+  g_server_ptr = &s;
+
+  // Install Ctrl+C handler
+  std::signal(SIGINT, on_sigint);
+
   return s.start() ? 0 : 1;
 }
